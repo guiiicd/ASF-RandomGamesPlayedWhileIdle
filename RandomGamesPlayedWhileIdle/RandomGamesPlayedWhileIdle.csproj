@@ -5,7 +5,6 @@
 
 	<ItemGroup>
 		<PackageReference Include="AngleSharp" />
-		<PackageReference Include="Newtonsoft.Json" />
 		<PackageReference Include="SteamKit2" />
 		<PackageReference Include="System.Composition.AttributedModel" IncludeAssets="compile" />
 	</ItemGroup>
