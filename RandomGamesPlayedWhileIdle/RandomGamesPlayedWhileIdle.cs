@@ -19,13 +19,11 @@ using SteamKit2;
 
 namespace RandomGamesPlayedWhileIdle {
 	[Export(typeof(IPlugin))]
-	public sealed partial class RandomGamesPlayedWhileIdlePlugin : IBotConnection, IASF, IBot {
-		private const int MaxGamesPlayedConcurrently = 32;
+	public sealed partial class RandomGamesPlayedWhileIdlePlugin : IBotConnection, IBotModules, IBot {
+		private const int DefaultMaxGamesPlayedConcurrently = 32;
 		private const int DefaultCycleIntervalMinutes = 0; // 0 means disabled
 
-		private static int CycleIntervalMinutes = DefaultCycleIntervalMinutes;
-		private static ImmutableHashSet<uint> BlacklistedAppIds = ImmutableHashSet<uint>.Empty;
-
+		private static readonly ConcurrentDictionary<Bot, BotSettings> BotConfigs = new();
 		private static readonly ConcurrentDictionary<Bot, CancellationTokenSource> BotTimers = new();
 		private static readonly ConcurrentDictionary<Bot, ImmutableList<uint>> BotGameLists = new();
 
@@ -37,30 +35,41 @@ namespace RandomGamesPlayedWhileIdle {
 			return Task.CompletedTask;
 		}
 
-		public Task OnASFInit(IReadOnlyDictionary<string, JToken>? additionalConfigProperties = null) {
-			if (additionalConfigProperties == null) {
-				return Task.CompletedTask;
-			}
+		public Task OnBotInitModules(Bot bot, IReadOnlyDictionary<string, JToken>? additionalConfigProperties = null) {
+			ArgumentNullException.ThrowIfNull(bot);
 
-			if (additionalConfigProperties.TryGetValue("RandomGamesPlayedWhileIdleCycleIntervalMinutes", out JToken? cycleIntervalToken)) {
-				int cycleInterval = cycleIntervalToken.Value<int>();
-				if (cycleInterval >= 0) {
-					CycleIntervalMinutes = cycleInterval;
-					ASF.ArchiLogger.LogGenericInfo($"Game cycle interval set to {CycleIntervalMinutes} minutes" + (CycleIntervalMinutes == 0 ? " (disabled)" : ""));
-				}
-			}
+			BotSettings settings = new();
 
-			if (additionalConfigProperties.TryGetValue("RandomGamesPlayedWhileIdleBlacklist", out JToken? blacklistToken)) {
-				try {
-					IEnumerable<uint>? blacklist = blacklistToken.ToObject<IEnumerable<uint>>();
-					if (blacklist != null) {
-						BlacklistedAppIds = blacklist.ToImmutableHashSet();
-						ASF.ArchiLogger.LogGenericInfo($"Loaded {BlacklistedAppIds.Count} blacklisted app IDs");
+			if (additionalConfigProperties != null) {
+				if (additionalConfigProperties.TryGetValue("RandomGamesPlayedWhileIdleCycleIntervalMinutes", out JToken? cycleIntervalToken)) {
+					int cycleInterval = cycleIntervalToken.Value<int>();
+					if (cycleInterval >= 0) {
+						settings.CycleIntervalMinutes = cycleInterval;
 					}
-				} catch (Exception e) {
-					ASF.ArchiLogger.LogGenericException(e);
+				}
+
+				if (additionalConfigProperties.TryGetValue("RandomGamesPlayedWhileIdleBlacklist", out JToken? blacklistToken)) {
+					try {
+						IEnumerable<uint>? blacklist = blacklistToken.ToObject<IEnumerable<uint>>();
+						if (blacklist != null) {
+							settings.BlacklistedAppIds = blacklist.ToImmutableHashSet();
+						}
+					} catch (Exception e) {
+						ASF.ArchiLogger.LogGenericException(e);
+					}
+				}
+
+				if (additionalConfigProperties.TryGetValue("RandomGamesPlayedWhileIdleMaxGamesPlayed", out JToken? maxGamesToken)) {
+					int maxGames = maxGamesToken.Value<int>();
+					if (maxGames > 0 && maxGames <= 32) {
+						settings.MaxGamesPlayedConcurrently = maxGames;
+					}
 				}
 			}
+
+			BotConfigs[bot] = settings;
+
+			ASF.ArchiLogger.LogGenericInfo($"[{bot.BotName}] Config: CycleInterval={settings.CycleIntervalMinutes}min, MaxGames={settings.MaxGamesPlayedConcurrently}, Blacklist={settings.BlacklistedAppIds.Count} apps");
 
 			return Task.CompletedTask;
 		}
@@ -72,6 +81,7 @@ namespace RandomGamesPlayedWhileIdle {
 
 			StopCycleTimer(bot);
 			BotGameLists.TryRemove(bot, out _);
+			BotConfigs.TryRemove(bot, out _);
 
 			return Task.CompletedTask;
 		}
@@ -88,14 +98,15 @@ namespace RandomGamesPlayedWhileIdle {
 			ArgumentNullException.ThrowIfNull(bot);
 
 			try {
-				ImmutableList<uint>? gamesList = await FetchGamesList(bot).ConfigureAwait(false);
+				BotSettings settings = BotConfigs.GetValueOrDefault(bot) ?? new BotSettings();
+				ImmutableList<uint>? gamesList = await FetchGamesList(bot, settings).ConfigureAwait(false);
 
 				if (gamesList != null && gamesList.Count > 0) {
 					BotGameLists[bot] = gamesList;
-					await SetRandomGames(bot, gamesList).ConfigureAwait(false);
+					SetRandomGames(bot, gamesList, settings);
 
-					if (CycleIntervalMinutes > 0) {
-						StartCycleTimer(bot);
+					if (settings.CycleIntervalMinutes > 0) {
+						StartCycleTimer(bot, settings);
 					}
 				}
 			} catch (Exception e) {
@@ -103,7 +114,7 @@ namespace RandomGamesPlayedWhileIdle {
 			}
 		}
 
-		private static async Task<ImmutableList<uint>?> FetchGamesList(Bot bot) {
+		private static async Task<ImmutableList<uint>?> FetchGamesList(Bot bot, BotSettings settings) {
 			using HtmlDocumentResponse? response = await bot.ArchiWebHandler
 				.UrlGetToHtmlDocumentWithSession(new Uri(ArchiWebHandler.SteamCommunityURL,
 					$"profiles/{bot.SteamID}/games")).ConfigureAwait(false);
@@ -121,32 +132,31 @@ namespace RandomGamesPlayedWhileIdle {
 			List<uint> list = GamesListRegex()
 				.Matches(element.OuterHtml)
 				.Select(static x => uint.Parse(x.Groups[1].Value, CultureInfo.InvariantCulture))
-				.Where(static appId => !BlacklistedAppIds.Contains(appId))
+				.Where(appId => !settings.BlacklistedAppIds.Contains(appId))
 				.ToList();
 
 			return list.Count > 0 ? list.ToImmutableList() : null;
 		}
 
-		private static async Task SetRandomGames(Bot bot, ImmutableList<uint> gamesList) {
+		private static void SetRandomGames(Bot bot, ImmutableList<uint> gamesList, BotSettings settings) {
 			ImmutableList<uint> randomGames = gamesList
 				.OrderBy(static _ => Guid.NewGuid())
-				.Take(Math.Min(MaxGamesPlayedConcurrently, gamesList.Count))
+				.Take(Math.Min(settings.MaxGamesPlayedConcurrently, gamesList.Count))
 				.ToImmutableList();
 
 			bot.BotConfig.GetType().GetProperty("GamesPlayedWhileIdle")?.SetValue(bot.BotConfig, randomGames);
 
-			ASF.ArchiLogger.LogGenericInfo($"Set {randomGames.Count} random games for {bot.BotName}");
-
-			await Task.CompletedTask.ConfigureAwait(false);
+			ASF.ArchiLogger.LogGenericInfo($"[{bot.BotName}] Set {randomGames.Count} random games");
 		}
 
-		private static void StartCycleTimer(Bot bot) {
+		private static void StartCycleTimer(Bot bot, BotSettings settings) {
 			StopCycleTimer(bot);
 
 			CancellationTokenSource cts = new();
 			BotTimers[bot] = cts;
 
-			_ = CycleGamesAsync(bot, cts.Token);
+			// Fire-and-forget is intentional - CycleGamesAsync handles all exceptions internally
+			_ = CycleGamesAsync(bot, settings, cts.Token);
 		}
 
 		private static void StopCycleTimer(Bot bot) {
@@ -156,17 +166,13 @@ namespace RandomGamesPlayedWhileIdle {
 			}
 		}
 
-		private static async Task CycleGamesAsync(Bot bot, CancellationToken cancellationToken) {
+		private static async Task CycleGamesAsync(Bot bot, BotSettings settings, CancellationToken cancellationToken) {
 			try {
 				while (!cancellationToken.IsCancellationRequested) {
-					await Task.Delay(TimeSpan.FromMinutes(CycleIntervalMinutes), cancellationToken).ConfigureAwait(false);
-
-					if (cancellationToken.IsCancellationRequested) {
-						break;
-					}
+					await Task.Delay(TimeSpan.FromMinutes(settings.CycleIntervalMinutes), cancellationToken).ConfigureAwait(false);
 
 					if (BotGameLists.TryGetValue(bot, out ImmutableList<uint>? gamesList) && gamesList.Count > 0) {
-						await SetRandomGames(bot, gamesList).ConfigureAwait(false);
+						SetRandomGames(bot, gamesList, settings);
 					}
 				}
 			} catch (OperationCanceledException) {
@@ -178,5 +184,11 @@ namespace RandomGamesPlayedWhileIdle {
 
 		[GeneratedRegex(@"{&quot;appid&quot;:(\d+),&quot;name&quot;:&quot;")]
 		private static partial Regex GamesListRegex();
+
+		private sealed class BotSettings {
+			public int CycleIntervalMinutes { get; set; } = DefaultCycleIntervalMinutes;
+			public int MaxGamesPlayedConcurrently { get; set; } = DefaultMaxGamesPlayedConcurrently;
+			public ImmutableHashSet<uint> BlacklistedAppIds { get; set; } = ImmutableHashSet<uint>.Empty;
+		}
 	}
 }
