@@ -98,7 +98,12 @@ namespace RandomGamesPlayedWhileIdle {
 			ArgumentNullException.ThrowIfNull(bot);
 
 			try {
-				BotSettings settings = BotConfigs.GetValueOrDefault(bot) ?? new BotSettings();
+				if (!BotConfigs.TryGetValue(bot, out BotSettings? settings)) {
+					ASF.ArchiLogger.LogGenericWarning($"[{bot.BotName}] No configuration found, using defaults");
+					settings = new BotSettings();
+					BotConfigs[bot] = settings;
+				}
+
 				ImmutableList<uint>? gamesList = await FetchGamesList(bot, settings).ConfigureAwait(false);
 
 				if (gamesList != null && gamesList.Count > 0) {
@@ -144,8 +149,13 @@ namespace RandomGamesPlayedWhileIdle {
 				.Take(Math.Min(settings.MaxGamesPlayedConcurrently, gamesList.Count))
 				.ToImmutableList();
 
-			bot.BotConfig.GetType().GetProperty("GamesPlayedWhileIdle")?.SetValue(bot.BotConfig, randomGames);
+			System.Reflection.PropertyInfo? property = bot.BotConfig.GetType().GetProperty("GamesPlayedWhileIdle");
+			if (property == null) {
+				ASF.ArchiLogger.LogGenericWarning($"[{bot.BotName}] Could not find GamesPlayedWhileIdle property - ASF version may be incompatible");
+				return;
+			}
 
+			property.SetValue(bot.BotConfig, randomGames);
 			ASF.ArchiLogger.LogGenericInfo($"[{bot.BotName}] Set {randomGames.Count} random games");
 		}
 
