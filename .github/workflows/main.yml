@@ -1,0 +1,38 @@
+name: Build Plugin
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        # Necessário pois o projeto importa props e projetos do ASF
+        submodules: recursive
+        fetch-depth: 0
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        # ArchiSteamFarm geralmente utiliza as versões mais recentes do .NET
+        dotnet-version: '9.0.x'
+
+    - name: Restore dependencies
+      run: dotnet restore RandomGamesPlayedWhileIdle.sln
+
+    - name: Build
+      run: dotnet build RandomGamesPlayedWhileIdle.sln -c Release --no-restore
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: RandomGamesPlayedWhileIdle-Plugin
+        path: RandomGamesPlayedWhileIdle/bin/Release/**/RandomGamesPlayedWhileIdle.dll
