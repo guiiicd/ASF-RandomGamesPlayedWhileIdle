@@ -46,15 +46,15 @@ namespace RandomGamesPlayedWhileIdle {
 				}
 
 				// Busca a lista de jogos da biblioteca do bot via API
-				HashSet<uint>? ownedGameIDs = await bot.ArchiHandler.GetOwnedGamesAsync(bot.SteamID).ConfigureAwait(false);
+				Dictionary<uint, string>? ownedGames = await bot.ArchiHandler.GetOwnedGames(bot.SteamID).ConfigureAwait(false);
 
-				if (ownedGameIDs == null || ownedGameIDs.Count == 0) {
+				if (ownedGames == null || ownedGames.Count == 0) {
 					ASF.ArchiLogger.LogGenericWarning($"[{bot.BotName}] Não foi possível obter a lista de jogos. Perfil pode estar privado ou sem jogos.");
 					return;
 				}
 
-				OwnedGamesPerBot[bot.BotName] = ownedGameIDs.ToList();
-				ASF.ArchiLogger.LogGenericInfo($"[{bot.BotName}] Total de jogos na biblioteca: {ownedGameIDs.Count}");
+				OwnedGamesPerBot[bot.BotName] = ownedGames.Keys.ToList();
+				ASF.ArchiLogger.LogGenericInfo($"[{bot.BotName}] Total de jogos na biblioteca: {ownedGames.Count}");
 
 				// Define os jogos iniciais
 				UpdateGamesPlayed(bot);
