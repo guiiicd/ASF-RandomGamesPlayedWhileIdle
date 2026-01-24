@@ -31,14 +31,12 @@ namespace RandomGamesPlayedWhileIdle {
 
 		public Task OnLoaded() => Task.CompletedTask;
 
-		public Task OnBotDisconnected(Bot bot, EResult reason) {
+		public async Task OnBotDisconnected(Bot bot, EResult reason) {
 			ArgumentNullException.ThrowIfNull(bot);
 
 			if (RotationTimers.TryRemove(bot.BotName, out Timer? timer)) {
-				timer.Dispose();
+				await timer.DisposeAsync().ConfigureAwait(false);
 			}
-
-			return Task.CompletedTask;
 		}
 
 		public async Task OnBotLoggedOn(Bot bot) {
