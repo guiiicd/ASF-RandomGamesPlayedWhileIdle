@@ -3,22 +3,17 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Composition;
-using System.Globalization;
 using System.Linq;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
-using AngleSharp.Dom;
 using ArchiSteamFarm.Core;
 using ArchiSteamFarm.Plugins.Interfaces;
 using ArchiSteamFarm.Steam;
-using ArchiSteamFarm.Steam.Integration;
-using ArchiSteamFarm.Web.Responses;
 using SteamKit2;
 
 namespace RandomGamesPlayedWhileIdle {
 	[Export(typeof(IPlugin))]
-	public sealed partial class RandomGamesPlayedWhileIdlePlugin : IBotConnection, IDisposable {
+	public sealed class RandomGamesPlayedWhileIdlePlugin : IBotConnection, IDisposable {
 		private const int MaxGamesPlayedConcurrently = 32;
 		private const int RotationIntervalMinutes = 30;
 
@@ -50,28 +45,22 @@ namespace RandomGamesPlayedWhileIdle {
 					ASF.ArchiLogger.LogGenericInfo($"[{bot.BotName}] Jogos fixos configurados: {string.Join(", ", fixedGames)}");
 				}
 
-				// Busca a lista de jogos da biblioteca do bot
-				using HtmlDocumentResponse? response = await bot.ArchiWebHandler
-					.UrlGetToHtmlDocumentWithSession(new Uri(ArchiWebHandler.SteamCommunityURL,
-						$"profiles/{bot.SteamID}/games")).ConfigureAwait(false);
+				// Busca a lista de jogos da biblioteca do bot via API
+				HashSet<uint>? ownedGameIDs = await bot.ArchiHandler.GetOwnedGamesAsync(bot.SteamID).ConfigureAwait(false);
 
-				if (response?.Content?.QuerySelector("#gameslist_config") is IElement element) {
-					List<uint> ownedGames = GamesListRegex()
-						.Matches(element.OuterHtml)
-						.Select(static x => uint.Parse(x.Groups[1].Value, CultureInfo.InvariantCulture))
-						.ToList();
-
-					if (ownedGames.Count > 0) {
-						OwnedGamesPerBot[bot.BotName] = ownedGames;
-						ASF.ArchiLogger.LogGenericInfo($"[{bot.BotName}] Total de jogos na biblioteca: {ownedGames.Count}");
-
-						// Define os jogos iniciais
-						UpdateGamesPlayed(bot);
-
-						// Inicia o timer de rotação
-						StartRotationTimer(bot);
-					}
+				if (ownedGameIDs == null || ownedGameIDs.Count == 0) {
+					ASF.ArchiLogger.LogGenericWarning($"[{bot.BotName}] Não foi possível obter a lista de jogos. Perfil pode estar privado ou sem jogos.");
+					return;
 				}
+
+				OwnedGamesPerBot[bot.BotName] = ownedGameIDs.ToList();
+				ASF.ArchiLogger.LogGenericInfo($"[{bot.BotName}] Total de jogos na biblioteca: {ownedGameIDs.Count}");
+
+				// Define os jogos iniciais
+				UpdateGamesPlayed(bot);
+
+				// Inicia o timer de rotação
+				StartRotationTimer(bot);
 			} catch (Exception e) {
 				ASF.ArchiLogger.LogGenericException(e);
 			}
@@ -137,8 +126,5 @@ namespace RandomGamesPlayedWhileIdle {
 			}
 			RotationTimers.Clear();
 		}
-
-		[GeneratedRegex(@"{&quot;appid&quot;:(\d+),&quot;name&quot;:&quot;")]
-		private static partial Regex GamesListRegex();
 	}
 }
