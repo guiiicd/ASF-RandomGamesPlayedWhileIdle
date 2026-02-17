@@ -45,22 +45,30 @@ namespace RandomGamesPlayedWhileIdle {
 					// Tenta ler do arquivo de configuração para garantir que pegamos apenas os jogos realmente fixos,
 					// ignorando quaisquer modificações em memória feitas anteriormente pelo plugin.
 					ImmutableList<uint> fixedGames = ImmutableList<uint>.Empty;
+					bool loadedFromDisk = false;
 					
 					try {
 						string configPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config", $"{bot.BotName}.json");
 						if (File.Exists(configPath)) {
 							string json = await File.ReadAllTextAsync(configPath).ConfigureAwait(false);
 							JsonNode? jsonNode = JsonNode.Parse(json);
-							JsonNode? gamesNode = jsonNode?["GamesPlayedWhileIdle"];
 							
-							if (gamesNode is JsonArray arr) {
-								try {
-									fixedGames = arr.Select(x => x?.GetValue<uint>() ?? 0).Where(x => x > 0).ToImmutableList();
-									ASF.ArchiLogger.LogGenericInfo($"[{bot.BotName}] Lendo configuração do disco: {fixedGames.Count} jogos encontrados.");
-								} catch {
-									// Fallback for older .NET or mixed types
-									fixedGames = arr.Select(x => uint.TryParse(x?.ToString(), out uint v) ? v : 0).Where(x => x > 0).ToImmutableList();
-									ASF.ArchiLogger.LogGenericWarning($"[{bot.BotName}] Aviso: método alternativo de parsing usado.");
+							if (jsonNode != null) {
+								loadedFromDisk = true; // Arquivo lido com sucesso, assumimos que o conteúdo (ou falta dele) é a verdade
+								JsonNode? gamesNode = jsonNode["GamesPlayedWhileIdle"];
+								
+								if (gamesNode is JsonArray arr) {
+									try {
+										fixedGames = arr.Select(x => x?.GetValue<uint>() ?? 0).Where(x => x > 0).ToImmutableList();
+										ASF.ArchiLogger.LogGenericInfo($"[{bot.BotName}] Lendo configuração do disco: {fixedGames.Count} jogos encontrados.");
+									} catch {
+										// Fallback for older .NET or mixed types
+										fixedGames = arr.Select(x => uint.TryParse(x?.ToString(), out uint v) ? v : 0).Where(x => x > 0).ToImmutableList();
+										ASF.ArchiLogger.LogGenericWarning($"[{bot.BotName}] Aviso: método alternativo de parsing usado.");
+									}
+								} else {
+									// Se a chave não existe ou não é array, fixedGames continua vazio (correto para quem não configurou nada)
+									ASF.ArchiLogger.LogGenericInfo($"[{bot.BotName}] Nenhuma configuração de jogos encontrada no disco. Assumindo 0 jogos fixos.");
 								}
 							}
 						}
@@ -68,9 +76,9 @@ namespace RandomGamesPlayedWhileIdle {
 						ASF.ArchiLogger.LogGenericError($"[{bot.BotName}] Erro ao ler configuração do disco: {ex.Message}. Usando configuração em memória.");
 					}
 
-					// Se falhou ao ler do disco ou lista vazia (e usuário talvez tenha configurado), fallback para memória.
-					// Mas note que a memória pode estar suja com os aleatórios se o plugin foi recarregado.
-					if (fixedGames.IsEmpty) {
+					// Se falhou ao ler do disco (arquivo não existe ou erro), fallback para memória.
+					// Se leu do disco com sucesso e veio vazio, NÃO entramos aqui (evita pegar o lixo da memória).
+					if (!loadedFromDisk) {
 						fixedGames = bot.BotConfig.GamesPlayedWhileIdle;
 						ASF.ArchiLogger.LogGenericInfo($"[{bot.BotName}] Usando configuração em memória (potencialmente suja): {fixedGames.Count} jogos.");
 					}
