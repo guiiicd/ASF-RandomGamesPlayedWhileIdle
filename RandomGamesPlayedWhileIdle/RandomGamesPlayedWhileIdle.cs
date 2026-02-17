@@ -10,12 +10,14 @@ using ArchiSteamFarm.Core;
 using ArchiSteamFarm.Plugins.Interfaces;
 using ArchiSteamFarm.Steam;
 using SteamKit2;
+using System.Text.Json.Nodes;
+using System.IO;
 
 namespace RandomGamesPlayedWhileIdle {
 	[Export(typeof(IPlugin))]
 	public sealed class RandomGamesPlayedWhileIdlePlugin : IBotConnection, IDisposable {
 		private const int MaxGamesPlayedConcurrently = 32;
-		private const int RotationIntervalMinutes = 30;
+		private const int RotationIntervalMinutes = 1440;
 
 		private readonly ConcurrentDictionary<string, ImmutableList<uint>> FixedGamesPerBot = new();
 		private readonly ConcurrentDictionary<string, List<uint>> OwnedGamesPerBot = new();
@@ -40,7 +42,39 @@ namespace RandomGamesPlayedWhileIdle {
 			try {
 				// Captura os jogos fixos configurados originalmente (apenas na primeira vez)
 				if (!FixedGamesPerBot.ContainsKey(bot.BotName)) {
-					ImmutableList<uint> fixedGames = bot.BotConfig.GamesPlayedWhileIdle;
+					// Tenta ler do arquivo de configuração para garantir que pegamos apenas os jogos realmente fixos,
+					// ignorando quaisquer modificações em memória feitas anteriormente pelo plugin.
+					ImmutableList<uint> fixedGames = ImmutableList<uint>.Empty;
+					
+					try {
+						string configPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config", $"{bot.BotName}.json");
+						if (File.Exists(configPath)) {
+							string json = await File.ReadAllTextAsync(configPath).ConfigureAwait(false);
+							JsonNode? jsonNode = JsonNode.Parse(json);
+							JsonNode? gamesNode = jsonNode?["GamesPlayedWhileIdle"];
+							
+							if (gamesNode is JsonArray arr) {
+								try {
+									fixedGames = arr.Select(x => x?.GetValue<uint>() ?? 0).Where(x => x > 0).ToImmutableList();
+									ASF.ArchiLogger.LogGenericInfo($"[{bot.BotName}] Lendo configuração do disco: {fixedGames.Count} jogos encontrados.");
+								} catch {
+									// Fallback for older .NET or mixed types
+									fixedGames = arr.Select(x => uint.TryParse(x?.ToString(), out uint v) ? v : 0).Where(x => x > 0).ToImmutableList();
+									ASF.ArchiLogger.LogGenericWarning($"[{bot.BotName}] Aviso: método alternativo de parsing usado.");
+								}
+							}
+						}
+					} catch (Exception ex) {
+						ASF.ArchiLogger.LogGenericError($"[{bot.BotName}] Erro ao ler configuração do disco: {ex.Message}. Usando configuração em memória.");
+					}
+
+					// Se falhou ao ler do disco ou lista vazia (e usuário talvez tenha configurado), fallback para memória.
+					// Mas note que a memória pode estar suja com os aleatórios se o plugin foi recarregado.
+					if (fixedGames.IsEmpty) {
+						fixedGames = bot.BotConfig.GamesPlayedWhileIdle;
+						ASF.ArchiLogger.LogGenericInfo($"[{bot.BotName}] Usando configuração em memória (potencialmente suja): {fixedGames.Count} jogos.");
+					}
+
 					FixedGamesPerBot[bot.BotName] = fixedGames;
 					ASF.ArchiLogger.LogGenericInfo($"[{bot.BotName}] Jogos fixos configurados: {string.Join(", ", fixedGames)}");
 				}
